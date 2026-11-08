@@ -132,58 +132,88 @@ void lcd_set_cursor(unsigned char col, unsigned char row)
 
 /* Global variables to track the current state */
 /* Global variables to track the current state */
-volatile uint32_t current_waveform = WAVE_SINE;
 volatile uint8_t update_waveform_flag = 0;
 
-/* Interrupt Handler for physical mbed pin 26 (P2.0) */
-void EINT3_IRQHandler(void)
+
+/* ------------------------------------------------------------
+   4x4 KEYPAD DRIVER
+   ------------------------------------------------------------ */
+const char keypad_map[4][4] = {
+    {'1', '2', '3', 'A'}, // 1=Sine, 2=Triangle, 3=Sawtooth, A=Freq UP
+    {'4', '5', '6', 'B'}, // 4=Square, B=Freq DOWN
+    {'7', '8', '9', 'C'}, 
+    {'*', '0', '#', 'D'}  
+};
+
+void Keypad_Init(void)
 {
-    /* Check if P2.0 (mbed p26) caused the interrupt */
-    if (LPC_GPIOINT->IO2IntStatR & (1 << 0))
+    /* 1. Set Rows (P2.0, P2.1, P2.2, P2.3) as Outputs */
+    LPC_GPIO2->FIODIR |= (1<<0) | (1<<1) | (1<<2) | (1<<3);
+
+    /* 2. Set Cols (P2.4, P2.5) and (P0.15, P0.16) as Inputs */
+    LPC_GPIO2->FIODIR &= ~((1<<4) | (1<<5));
+    LPC_GPIO0->FIODIR &= ~((1<<15) | (1<<16));
+
+    /* 
+     * 3. Enable Internal Pull-Up Resistors for the Columns 
+     * PINMODE bits: 00 = Pull-Up (Default), 10 = No Resistor, 11 = Pull-Down
+     */
+    LPC_PINCON->PINMODE4 &= ~((3<<8) | (3<<10));   // P2.4, P2.5 to Pull-Up
+    LPC_PINCON->PINMODE0 &= ~(3<<30);              // P0.15 to Pull-Up
+    LPC_PINCON->PINMODE1 &= ~(3<<0);               // P0.16 to Pull-Up
+
+    /* 4. Set all rows HIGH initially */
+    LPC_GPIO2->FIOSET = (1<<0) | (1<<1) | (1<<2) | (1<<3);
+}
+
+char Keypad_Scan(void)
+{
+    int row;
+    char key_pressed = 0;
+
+    for (row = 0; row < 4; row++)
     {
-        /* 1. Clear the hardware interrupt flag */
-        LPC_GPIOINT->IO2IntClr = (1 << 0);
+        /* Set all rows HIGH */
+        LPC_GPIO2->FIOSET = (1<<0) | (1<<1) | (1<<2) | (1<<3);
+        
+        /* Drive the current row LOW */
+        LPC_GPIO2->FIOCLR = (1 << row);
+        
+        /* Brief delay for pin voltages to settle */
+        delay_ms(1);
 
-        /* 2. Disable further interrupts to ignore wire bouncing */
-        NVIC_DisableIRQ(EINT3_IRQn);
+        /* Read the columns. If a col is LOW (0), the button is pressed */
+        if ((LPC_GPIO2->FIOPIN & (1<<4)) == 0)  key_pressed = keypad_map[row][0]; // Col 1
+        if ((LPC_GPIO2->FIOPIN & (1<<5)) == 0)  key_pressed = keypad_map[row][1]; // Col 2
+        if ((LPC_GPIO0->FIOPIN & (1<<15)) == 0) key_pressed = keypad_map[row][2]; // Col 3
+        if ((LPC_GPIO0->FIOPIN & (1<<16)) == 0) key_pressed = keypad_map[row][3]; // Col 4
 
-        /* 3. Cycle to the next waveform */
-        current_waveform++;
-        if (current_waveform > WAVE_SQUARE) {
-            current_waveform = WAVE_SINE;
-        }
-
-        /* 4. Trigger the update flag */
-        update_waveform_flag = 1;
+        /* If we found a key, stop scanning */
+        if (key_pressed != 0) break;
     }
+    
+    /* Reset all rows HIGH before exiting */
+    LPC_GPIO2->FIOSET = (1<<0) | (1<<1) | (1<<2) | (1<<3);
+    
+    return key_pressed;
 }
 
-/* Initialization for physical mbed pin 26 (P2.0) */
-void External_Interrupt_Init(void)
-{
-    /* 1. Configure P2.0 (mbed pin 26) as a GPIO Input */
-    LPC_GPIO2->FIODIR &= ~(1 << 0);
-
-    /* 2. Enable internal Pull-Down resistor on P2.0 to prevent floating */
-    LPC_PINCON->PINMODE4 |= (3 << 0);
-
-    /* 3. Enable Rising Edge interrupt for P2.0 */
-    LPC_GPIOINT->IO2IntEnR |= (1 << 0);
-
-    /* 4. Clear any pending interrupts */
-    LPC_GPIOINT->IO2IntClr = (1 << 0);
-
-    /* 5. Enable the shared GPIO interrupt vector */
-    NVIC_EnableIRQ(EINT3_IRQn);
-}
+/* ------------------------------------------------------------
+   MAIN ROUTINE
+   ------------------------------------------------------------ */
+/* Global state variables */
+volatile uint32_t current_waveform = WAVE_SINE;
+uint32_t current_freq = 10000;
+uint8_t current_amplitude = 10; /* 10 = 100%, 5 = 50%, 1 = 10% */
 
 /* ------------------------------------------------------------
    MAIN ROUTINE
    ------------------------------------------------------------ */
 int main(void)
 {
-    uint32_t current_freq = 15000;
     char display_buffer[16];
+    char key;
+    uint8_t update_display = 1; // Flag to force an initial LCD draw
 
     SystemClock_Force96MHz();
 
@@ -193,48 +223,77 @@ int main(void)
 
     lcd_init();
     DAC_Init();
-    
-    /* Initialize the wire interrupt on p26 */
-    External_Interrupt_Init();
+    Keypad_Init();
 
     DAC_DMA_Start(current_waveform, 256, current_freq);
 
-    /* Print initial text to LCD */
-    lcd_set_cursor(0, 0);
-    lcd_string("Wave: SINE      "); 
-    
-    sprintf(display_buffer, "Freq: %d Hz    ", current_freq);
-    lcd_set_cursor(0, 1);
-    lcd_string(display_buffer);
-
     while (1)
     {
-        /* --- INTERRUPT HANDLING --- */
-        if (update_waveform_flag) {
-            update_waveform_flag = 0;
-            
-            /* Restart DMA with the new waveform shape */
-            DAC_DMA_Start(current_waveform, 256, current_freq);
+        /* 1. Scan the keypad */
+        key = Keypad_Scan();
 
-            /* Update LCD Top Row */
+        /* 2. Process the keypress */
+        if (key != 0) 
+        {
+            if (key == '1') { current_waveform = WAVE_SINE;     update_display = 1; }
+            if (key == '2') { current_waveform = WAVE_TRIANGLE; update_display = 1; }
+            if (key == '3') { current_waveform = WAVE_SAWTOOTH; update_display = 1; }
+            if (key == '4') { current_waveform = WAVE_SQUARE;   update_display = 1; }
+            
+            if (key == 'A') { 
+                current_freq += 500; // Increase frequency by 500 Hz
+                if (current_freq > 15000) current_freq = 15000; // Cap at 20 kHz
+                update_display = 1; 
+            }
+            if (key == 'B') { 
+                if (current_freq > 500) current_freq -= 500; // Decrease frequency
+                else current_freq = 10; // Minimum floor
+                update_display = 1; 
+            }
+						
+						/* New Amplitude Controls */
+            if (key == 'C') { 
+                if (current_amplitude < 10) current_amplitude++; // Increase up to 100%
+                update_display = 1; 
+            }
+            if (key == 'D') { 
+                if (current_amplitude > 1) current_amplitude--;  // Decrease down to 10%
+                update_display = 1; 
+            }
+
+            /* Update the physical hardware instantly */
+            if (update_display) {
+                DAC_DMA_Start(current_waveform, 256, current_freq);
+            }
+
+            /* 
+             * Simple Software Debounce: 
+             * Wait for the user to lift their finger before continuing 
+             */
+            while(Keypad_Scan() != 0) {
+                delay_ms(10);
+            }
+        }
+
+        /* 3. Update the LCD only if something changed */
+        if (update_display) 
+        {
+            update_display = 0;
+
+            /* Update Top Row (Waveform) */
             lcd_set_cursor(0, 0);
             if (current_waveform == WAVE_SINE)          lcd_string("Wave: SINE      ");
             else if (current_waveform == WAVE_TRIANGLE) lcd_string("Wave: TRIANGLE  ");
             else if (current_waveform == WAVE_SAWTOOTH) lcd_string("Wave: SAWTOOTH  ");
             else if (current_waveform == WAVE_SQUARE)   lcd_string("Wave: SQUARE    ");
 
-            /* DEBOUNCE: Ignore all wire sparks for 500ms */
-            delay_ms(500); 
-
-            /* Clear any bounces that happened during the delay and re-enable p26 */
-            LPC_GPIOINT->IO2IntClr = (1 << 0);
-            NVIC_EnableIRQ(EINT3_IRQn);
+            /* Update Bottom Row (Frequency) */
+            sprintf(display_buffer, "F:%d A:%d0%%   ", current_freq, current_amplitude);
+            lcd_set_cursor(0, 1);
+            lcd_string(display_buffer);
         }
 
-        /* 
-         * CRITICAL: A short delay so the CPU isn't spinning at 
-         * maximum speed doing nothing. This keeps the system stable. 
-         */
-        delay_ms(50);
+        /* Background loop delay to prevent CPU spinning */
+        delay_ms(20);
     }
 }

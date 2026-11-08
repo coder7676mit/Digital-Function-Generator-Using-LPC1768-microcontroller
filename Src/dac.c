@@ -2,6 +2,9 @@
 #include "dac.h"
 #include "waveforms.h"
 
+/* Tell dac.c to look for this variable in main.c */
+extern uint8_t current_amplitude; 
+
 static uint32_t dma_lut[LUT_SIZE];
 
 /* CRITICAL FIX 1: Force 4-byte memory alignment for the DMA LLI hardware */
@@ -59,6 +62,9 @@ void DAC_DMA_Start(uint32_t waveform, uint32_t samples, uint32_t frequency)
 {
     uint32_t i;
     const uint16_t *source_lut;
+    /* Move declarations to the top of the block to satisfy C89 standard */
+    int32_t centered;
+    uint32_t final_val;
 
     if (waveform == WAVE_SINE)           source_lut = sine_lut;
     else if (waveform == WAVE_SAWTOOTH)  source_lut = sawtooth_lut;
@@ -67,12 +73,23 @@ void DAC_DMA_Start(uint32_t waveform, uint32_t samples, uint32_t frequency)
 
     /* Convert 10-bit LUT to 32-bit DMA format (shift left by 6) */
     for (i = 0; i < samples; i++) {
-        dma_lut[i] = ((uint32_t)source_lut[i]) << 6;
+        /* 1. Remove the DC offset to center the wave at 0 */
+        centered = (int32_t)source_lut[i] - 512;
+        
+        /* 2. Scale the amplitude (current_amplitude is 1 to 10) */
+        centered = (centered * current_amplitude) / 10;
+        
+        /* 3. Restore the DC offset */
+        final_val = (uint32_t)(centered + 512);
+        
+        /* 4. Shift left by 6 to fit the DACR hardware register */
+        dma_lut[i] = (final_val << 6);
     }
 
     /* Stop DMA channel 0 and DAC before reconfiguration */
     LPC_GPDMACH0->DMACCConfig = 0;
     LPC_DAC->DACCTRL = 0;
+    
 
     LPC_GPDMA->DMACIntTCClear = (1 << 0);
     LPC_GPDMA->DMACIntErrClr = (1 << 0);
