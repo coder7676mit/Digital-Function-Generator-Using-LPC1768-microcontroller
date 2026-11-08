@@ -1,0 +1,18 @@
+# Keil uVision build/intermediate output
+*.o
+*.d
+*.crf
+*.__i
+*.axf
+*.hex
+*.map
+*.htm
+*.lnp
+*.tra
+*.plg
+*.dep
+*.uvgui*
+*.bak
+*.uvopt
+Obj/
+Listings/
