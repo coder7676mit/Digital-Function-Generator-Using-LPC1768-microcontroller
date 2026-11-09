@@ -127,9 +127,10 @@ No external libraries are required — everything is direct register access via 
 Hardware setup and LCD readout, and the sawtooth output captured at the two ends of the
 supported frequency range:
 
-![Hardware setup](docs/images/hardware-setup.png)
-![15 kHz sawtooth, 3.2 V max amplitude](docs/images/scope-15khz-sawtooth.jpeg)
-![10 Hz sawtooth, 3.2 V max amplitude](docs/images/scope-10hz-sawtooth.jpeg)
+![LCD readout](docs/images/hardware-lcd.jpg)
+![Breadboard wiring](docs/images/hardware-breadboard.jpg)
+![15 kHz sawtooth, 3.2 V max amplitude](docs/images/scope-15khz-sawtooth.jpg)
+![10 Hz sawtooth, 3.2 V max amplitude](docs/images/scope-10hz-sawtooth.jpg)
 
 A close match was observed between the requested and measured frequency for all four
 waveforms across the tested range (full table and discussion in the report). The 10 Hz–15
